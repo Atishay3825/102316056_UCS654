@@ -31,5 +31,6 @@ $$ z = x + a_r \cdot \sin(b_r \cdot x) $$
 Project Notebook: [PDF_102316056.ipynb](PDF_102316056.ipynb)
 
 
-## **5. Screenshot of the Interface**
+## **5. Screenshot of the Result**
 ![Final GAN Results](image/final_gan_results.png)
+
