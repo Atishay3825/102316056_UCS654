@@ -1,0 +1,61 @@
+# Environment variables and secrets
+.streamlit/secrets.toml
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Temporary directories
+work_dir/
+temp/
+tmp/
+
+# Audio/Video files (can be large)
+*.mp3
+*.wav
+*.m4a
+*.webm
+*.flac
+*.ogg
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+permanent_storage/
+mashup_result.zip
+mashup_compressed.mp3
+current_session_mashup.mp3
+*.info.json
