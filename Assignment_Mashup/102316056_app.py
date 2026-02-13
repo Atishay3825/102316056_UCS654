@@ -18,36 +18,59 @@ def get_musical_boundaries(file_path):
     except:
         return 0, -1
 
+# --- Updated 1. Audio Processing Engine with 403 Forbidden Fix ---
 def run_mashup_process(singer, n, y):
     temp_dir = "work_dir"
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
     os.makedirs(temp_dir)
     
+    # 403 FIX: Create a temporary cookie file from Streamlit Secrets
+    cookie_path = "cookies.txt"
+    if "YT_COOKIES" in st.secrets:
+        with open(cookie_path, "w") as f:
+            f.write(st.secrets["YT_COOKIES"])
+    
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
+        'cookiefile': cookie_path if os.path.exists(cookie_path) else None, # Use cookies
         'default_search': f'ytsearch{n}',
         'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+        # SPOOFING: Mimic a real browser and mobile client
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'extractor_args': {'youtube': {'player_client': ['android', 'web_embedded']}},
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'}],
     }
     
-    with YoutubeDL(ydl_opts) as ydl:
-        ydl.download([f"{singer} official audio"])
-    
-    files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.endswith(".mp3")]
-    mashup = AudioSegment.empty()
-    
-    for f in files:
-        start, end = get_musical_boundaries(f)
-        # Apply No-Middle-Cut logic
-        clip = AudioSegment.from_file(f).normalize()[start:end]
-        clip = clip[:y*1000] # Limit to user's duration
-        mashup = mashup.append(clip, crossfade=1500) if len(mashup) > 0 else clip
-    
-    output_mp3 = f"mashup_102316056.mp3"
-    mashup.export(output_mp3, format="mp3", bitrate="320k")
-    shutil.rmtree(temp_dir)
-    return output_mp3
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            # We search for official audio to improve quality and uniqueness
+            ydl.download([f"{singer} official audio"])
+        
+        files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.endswith(".mp3")]
+        mashup = AudioSegment.empty()
+        
+        for f in files:
+            # Boundary detection removes non-musical intros/outros
+            start, end = get_musical_boundaries(f)
+            # Apply No-Middle-Cut logic
+            clip = AudioSegment.from_file(f).normalize()[start:end]
+            clip = clip[:y*1000] # Limit duration per track
+            
+            if len(mashup) > 0:
+                mashup = mashup.append(clip, crossfade=1500)
+            else:
+                mashup = clip
+        
+        output_mp3 = f"mashup_102316056.mp3"
+        mashup.export(output_mp3, format="mp3", bitrate="320k")
+        return output_mp3
+
+    finally:
+        # Cleanup cookies and workspace after processing
+        if os.path.exists(cookie_path):
+            os.remove(cookie_path)
+        shutil.rmtree(temp_dir)
 
 # --- 2. Email & Packaging Logic ---
 def package_and_mail(email_id, mp3_path):
@@ -111,4 +134,5 @@ if submitted:
                 os.remove(result_mp3)
                 os.remove(result_zip)
         except Exception as e:
+
             st.error(f"Error during execution: {e}")
