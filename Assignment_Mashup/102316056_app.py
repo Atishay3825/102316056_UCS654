@@ -11,40 +11,43 @@ from email.message import EmailMessage
 from yt_dlp import YoutubeDL
 from pydub import AudioSegment
 
-# --- CONFIGURATION & PATHS ---
-# FFmpeg is handled by packages.txt on Streamlit Cloud
+# --- CONFIGURATIONs ---
 STORAGE_DIR = "permanent_storage"
 TEMP_DIR = "work_dir"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
 # --- 1. SMART AUDIO ENGINE ---
-def download_videos(singer, n):
+def download_videos(singer, n, status_text=None):
+    # FORCE CLEANUP
     if os.path.exists(TEMP_DIR): 
         try: shutil.rmtree(TEMP_DIR)
         except: pass
     os.makedirs(TEMP_DIR, exist_ok=True)
     
-    # COOKIES SETUP (Bypass 403)
+    # Debug: Print absolute path
+    abs_path = os.path.abspath(TEMP_DIR)
+    if status_text: status_text.text(f"📂 Saving to: {abs_path}")
+    
+    # COOKIE SETUP
     cookie_file = "cookies.txt"
     if "YOUTUBE_COOKIES" in st.secrets:
         with open(cookie_file, "w") as f:
             f.write(st.secrets["YOUTUBE_COOKIES"])
-    
+
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': False,
+        'format': 'bestaudio', # Simple format to avoid availability errors
+        'quiet': False, 
         'default_search': f'ytsearch{n}',
-        'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
+        'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s', # Explicit path template
         'ignoreerrors': True,
         'nopostprocessor': True,
         'socket_timeout': 30,
         'retries': 10,
-        # Use cookies if available
         'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
-        # Fallback to Android client
+        # 'tv' client is often less restricted
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],
+                'player_client': ['tv', 'web'],
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -54,43 +57,48 @@ def download_videos(singer, n):
         with YoutubeDL(ydl_opts) as ydl:
             ydl.download([f"{singer} official audio"])
     except Exception as e:
-        raise Exception(f"Download Failed (YouTube blocked IP?): {str(e)}")
+        raise Exception(f"Download Engine Failed: {str(e)}")
 
     # Wait for file release
     gc.collect()
     time.sleep(2)
     
+    # DEBUG: List all files in the dir
+    files_in_dir = os.listdir(TEMP_DIR)
+    if status_text: status_text.text(f"🔎 Files found in dir: {files_in_dir}")
+    
     audio_extensions = ('.mp3', '.m4a', '.webm', '.wav', '.ogg', '.flac', '.aac')
     files = []
-    for _ in range(3):
-        files = [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR) 
-                 if f.endswith(audio_extensions) and not f.endswith('.info.json')]
-        if files: break
-        time.sleep(1)
+    
+    # Filter for audio
+    files = [os.path.join(TEMP_DIR, f) for f in files_in_dir 
+             if f.lower().endswith(audio_extensions) and not f.endswith('.info.json')]
         
     if not files:
-        raise Exception("No audio tracks found after download.")
+        err_msg = f"No audio files found. content: {files_in_dir}"
+        if status_text: status_text.warning(err_msg)
+        raise Exception("YouTube download failed (403 or no files). Try adding Cookies.")
+        
     return files
 
 def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_text=None):
     mashup = AudioSegment.empty()
     
-    # PROCESSING LOOP
-    total_files = len(files)
+    total = len(files)
     for i, f in enumerate(files):
         try:
-            if status_text:
-                status_text.text(f"🎹 Processing Track {i+1}/{total_files}: {os.path.basename(f)[:20]}...")
-            
+            if status_text: 
+                status_text.text(f"🎹 Processing {i+1}/{total}: {os.path.basename(f)}")
+                
             # Librosa Load
             y_audio, sr = librosa.load(f, sr=None)
             
-            # Logic: Auto or Manual
+            # Smart Cut Logic
             start_ms = 0
             end_ms = 0
             
             if auto_mode:
-                 # Detect Chorus
+                # Detect Chorus
                 rms = librosa.feature.rms(y=y_audio)[0]
                 peak_frame = rms.argmax()
                 threshold = rms[peak_frame] * 0.7
@@ -98,28 +106,25 @@ def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_tex
                 end_f = len(rms) - next((idx for idx, val in enumerate(reversed(rms)) if val > threshold), 0)
                 start_ms = int(librosa.frames_to_time(start_f, sr=sr)*1000)
                 end_ms = int(librosa.frames_to_time(end_f, sr=sr)*1000)
-                
-                # Limit to 30s max for auto to avoid long clips
                 if (end_ms - start_ms) > 40000: end_ms = start_ms + 40000
             else:
-                # Peak-Centered Manual Cut
+                # Manual Cut
                 rms = librosa.feature.rms(y=y_audio)[0]
                 peak_time = librosa.frames_to_time(rms.argmax(), sr=sr)
                 start_ms = max(0, int((peak_time - (y/3)) * 1000))
                 end_ms = start_ms + (y * 1000)
 
-            # CLIP & CROSSFADE (Pydub)
+            # Assemble
             clip = AudioSegment.from_file(f)[start_ms:end_ms].normalize()
             mashup = mashup.append(clip, crossfade=1000) if len(mashup) > 0 else clip
             
-            if progress_bar: progress_bar.progress(int(10 + (i / len(files)) * 80))
+            if progress_bar: progress_bar.progress(int(10 + (i / total) * 80))
             
-            # Cleanup loops
             del y_audio, rms
             gc.collect()
             
         except Exception as e: 
-            print(f"Skipping file {f}: {e}")
+            print(f"Skipping {f}: {e}")
             continue
 
     if len(mashup) == 0:
@@ -127,16 +132,13 @@ def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_tex
 
     return mashup
 
-# --- 2. ANONYMIZED PACKAGING & EMAIL ---
+# --- 2. PACKAGING ---
 def package_and_mail(email_id, mp3_path):
     zip_name = "mashup_result.zip"
     
-    # Check file size
     file_size = os.path.getsize(mp3_path) / (1024 * 1024) 
-    
-    # Compress if needed
     if file_size > 20:
-        st.warning(f"⚠️ Mashup is {file_size:.1f}MB - compressing...")
+        st.warning(f"⚠️ Compressing {file_size:.1f}MB file...")
         audio = AudioSegment.from_file(mp3_path)
         compressed_path = "mashup_compressed.mp3"
         audio.export(compressed_path, format="mp3", bitrate="192k")
@@ -151,7 +153,7 @@ def package_and_mail(email_id, mp3_path):
     if sender and pwd:
         try:
             msg = EmailMessage()
-            msg['Subject'] = "Your Custom Music Mashup is Ready! 🎵"
+            msg['Subject'] = "Your Custom Music Mashup! 🎵"
             msg['From'] = sender
             msg['To'] = email_id
             msg.set_content("Here is your generated mashup. Enjoy!")
@@ -163,15 +165,14 @@ def package_and_mail(email_id, mp3_path):
                 smtp.login(sender, pwd)
                 smtp.send_message(msg)
             st.success(f"✅ Email sent to {email_id}!")
-            
         except Exception as e:
-            st.warning(f"⚠️ Email failed: {str(e)}. File saved locally.")
+            st.warning(f"⚠️ Email failed: {str(e)}")
     else:
         st.info("📧 Email not configured - File saved locally.")
     
     return zip_name
 
-# --- 3. EYE-CATCHY FRONTEND ---
+# --- 3. FRONTEND ---
 st.set_page_config(page_title="Studio Mashup", page_icon="🎧")
 
 st.markdown("""
@@ -184,83 +185,50 @@ c1, c2 = st.columns([1, 4])
 with c1: st.image("https://cdn-icons-png.flaticon.com/512/3293/3293810.png", width=100)
 with c2: 
     st.title("Pro Mashup Studio")
-    st.caption("AI-Powered Energy Analysis • High Fidelity • Instant Delivery")
+    st.caption("AI-Powered Energy Analysis")
 
 st.divider()
 
-# TABS FOR SOURCE
-tab1, tab2 = st.tabs(["🎥 YouTube Source", "📂 Upload Audio"])
+col_a, col_b = st.columns(2)
+with col_a: singer = st.text_input("Singer Name", placeholder="e.g. Sharry Mann")
+with col_b: email_id = st.text_input("Your Email", placeholder="yourname@gmail.com")
 
-singer = None
-n_vids = 10
-uploaded_files = None
-
-with tab1:
-    singer = st.text_input("Singer Name", placeholder="e.g. Sharry Mann")
-    n_vids = st.slider("Number of Tracks", 10, 40, 20)
-    st.info("ℹ️ If YouTube download fails (403 Error), use the 'Upload Audio' tab!")
-
-with tab2:
-    uploaded_files = st.file_uploader("Upload MP3/WAV files", accept_multiple_files=True)
-
-st.subheader("⚙️ Configuration")
-email_id = st.text_input("Your Email", placeholder="yourname@gmail.com")
+n_vids = st.slider("Number of Tracks", 10, 40, 20)
 use_auto = st.toggle("Smart Auto-Cut (Detect Chorus)", value=True)
 y_secs = 0 if use_auto else st.number_input("Seconds per track", 10, 60, 30)
 
 st.divider()
 
 if st.button("🚀 CREATE MASHUP"):
-    if not email_id or "@" not in email_id:
-        st.warning("Please enter a valid email.")
+    if not singer or not email_id or "@" not in email_id:
+        st.warning("Please fill details.")
     else:
         prog = st.progress(0)
         status = st.empty()
-        
         try:
-            final_files = []
+            # 1. DOWNLOAD
+            status.text(f"⬇️ Downloading {n_vids} tracks (TV Client mode)...")
+            final_files = download_videos(singer, n_vids, status)
             
-            # 1. GET FILES
-            if uploaded_files:
-                status.text("📂 Processing Uploaded Files...")
-                if os.path.exists(TEMP_DIR): 
-                    try: shutil.rmtree(TEMP_DIR)
-                    except: pass
-                os.makedirs(TEMP_DIR, exist_ok=True)
-                
-                for uf in uploaded_files:
-                    path = os.path.join(TEMP_DIR, uf.name)
-                    with open(path, "wb") as f:
-                        f.write(uf.getbuffer())
-                    final_files.append(path)
-            elif singer:
-                status.text(f"⬇️ Downloading {n_vids} videos for '{singer}'...")
-                final_files = download_videos(singer, n_vids)
-                status.text(f"✅ Downloaded {len(final_files)} files. Starting processing...")
-                time.sleep(1)
-            else:
-                st.error("Please provide a Singer Name OR Upload files.")
-                st.stop()
-                
             # 2. PROCESS
+            status.text("🎹 Processing audio...")
             mashup = process_audio_files(final_files, y_secs, use_auto, prog, status)
             
             # 3. EXPORT
-            status.text("💾 Saving Mashup to disk...")
+            status.text("💾 Saving...")
             output_mp3 = "current_session_mashup.mp3"
             mashup.export(output_mp3, format="mp3", bitrate="320k")
             
             # 4. PACKAGE
-            status.text(f"📧 Sending email to {email_id}...")
+            status.text("📧 Emailing...")
             zip_res = package_and_mail(email_id, output_mp3)
             
             prog.progress(100)
-            status.success(f"🎉 Done! Sent to {email_id}")
+            status.success("Done!")
             st.balloons()
             
-            # Download Button
             with open(zip_res, "rb") as f:
-                 st.download_button("📥 Download ZIP Result", f, file_name="mashup.zip", mime="application/zip")
+                 st.download_button("📥 Download ZIP", f, file_name="mashup.zip", mime="application/zip")
                  
         except Exception as e:
-            st.error(f"❌ Error caught: {str(e)}")
+            st.error(f"❌ Error: {e}")
