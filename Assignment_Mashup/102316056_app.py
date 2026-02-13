@@ -43,6 +43,7 @@ def download_videos(singer, n, status_text=None):
         'nopostprocessor': True,
         'socket_timeout': 30,
         'retries': 10,
+        'source_address': '0.0.0.0', # Force IPv4
         'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
         # 'tv' client is often less restricted
         'extractor_args': {
