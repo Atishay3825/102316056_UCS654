@@ -18,15 +18,10 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 
 # --- 1. SMART AUDIO ENGINE ---
 def download_videos(singer, n, status_text=None):
-    # FORCE CLEANUP
     if os.path.exists(TEMP_DIR): 
         try: shutil.rmtree(TEMP_DIR)
         except: pass
     os.makedirs(TEMP_DIR, exist_ok=True)
-    
-    # Debug: Print absolute path
-    abs_path = os.path.abspath(TEMP_DIR)
-    if status_text: status_text.text(f"📂 Saving to: {abs_path}")
     
     # COOKIE SETUP
     cookie_file = "cookies.txt"
@@ -35,23 +30,16 @@ def download_videos(singer, n, status_text=None):
             f.write(st.secrets["YOUTUBE_COOKIES"])
 
     ydl_opts = {
-        'format': 'bestaudio', # Simple format to avoid availability errors
+        'format': 'bestaudio/best', # High-fidelity fallback
         'quiet': False, 
         'default_search': f'ytsearch{n}',
-        'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s', # Explicit path template
+        'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
         'ignoreerrors': True,
         'nopostprocessor': True,
-        'socket_timeout': 30,
-        'retries': 10,
-        'source_address': '0.0.0.0', # Force IPv4
         'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
-        # 'tv' client is often less restricted
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv', 'web'],
-            }
-        },
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        # Bypasses 403 Forbidden using iOS client
+        'extractor_args': {'youtube': {'player_client': ['ios']}},
+        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
     }
 
     try:
@@ -60,48 +48,34 @@ def download_videos(singer, n, status_text=None):
     except Exception as e:
         raise Exception(f"Download Engine Failed: {str(e)}")
 
-    # Wait for file release
     gc.collect()
     time.sleep(2)
     
-    # DEBUG: List all files in the dir
     files_in_dir = os.listdir(TEMP_DIR)
-    if status_text: status_text.text(f"🔎 Files found in dir: {files_in_dir}")
-    
-    audio_extensions = ('.mp3', '.m4a', '.webm', '.wav', '.ogg', '.flac', '.aac')
-    files = []
-    
-    # Filter for audio
+    audio_exts = ('.mp3', '.m4a', '.webm', '.wav', '.ogg', '.flac', '.aac')
     files = [os.path.join(TEMP_DIR, f) for f in files_in_dir 
-             if f.lower().endswith(audio_extensions) and not f.endswith('.info.json')]
+             if f.lower().endswith(audio_exts) and not f.endswith('.info.json')]
         
     if not files:
-        err_msg = f"No audio files found. content: {files_in_dir}"
-        if status_text: status_text.warning(err_msg)
-        raise Exception("YouTube download failed (403 or no files). Try adding Cookies.")
+        raise Exception("YouTube download failed (403 or no files). Verify Cookies in Secrets.")
         
     return files
 
 def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_text=None):
     mashup = AudioSegment.empty()
-    
     total = len(files)
+    
     for i, f in enumerate(files):
         try:
-            if status_text: 
-                status_text.text(f"🎹 Processing {i+1}/{total}: {os.path.basename(f)}")
-                
-            # Librosa Load
-            y_audio, sr = librosa.load(f, sr=None)
+            if status_text: status_text.text(f"🎹 Processing {i+1}/{total}")
             
-            # Smart Cut Logic
-            start_ms = 0
-            end_ms = 0
+            # Load and Analyze
+            y_audio, sr = librosa.load(f, sr=None)
+            rms = librosa.feature.rms(y=y_audio)[0]
+            peak_frame = rms.argmax()
             
             if auto_mode:
-                # Detect Chorus
-                rms = librosa.feature.rms(y=y_audio)[0]
-                peak_frame = rms.argmax()
+                # Smart Chorus Detection
                 threshold = rms[peak_frame] * 0.7
                 start_f = next((idx for idx, val in enumerate(rms) if val > threshold), 0)
                 end_f = len(rms) - next((idx for idx, val in enumerate(reversed(rms)) if val > threshold), 0)
@@ -109,42 +83,25 @@ def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_tex
                 end_ms = int(librosa.frames_to_time(end_f, sr=sr)*1000)
                 if (end_ms - start_ms) > 40000: end_ms = start_ms + 40000
             else:
-                # Manual Cut
-                rms = librosa.feature.rms(y=y_audio)[0]
-                peak_time = librosa.frames_to_time(rms.argmax(), sr=sr)
+                # Manual Peak-Centered Cut
+                peak_time = librosa.frames_to_time(peak_frame, sr=sr)
                 start_ms = max(0, int((peak_time - (y/3)) * 1000))
                 end_ms = start_ms + (y * 1000)
 
-            # Assemble
             clip = AudioSegment.from_file(f)[start_ms:end_ms].normalize()
             mashup = mashup.append(clip, crossfade=1000) if len(mashup) > 0 else clip
             
             if progress_bar: progress_bar.progress(int(10 + (i / total) * 80))
-            
-            del y_audio, rms
             gc.collect()
             
-        except Exception as e: 
-            print(f"Skipping {f}: {e}")
+        except Exception as e:
             continue
-
-    if len(mashup) == 0:
-        raise Exception("Could not process any audio files.")
 
     return mashup
 
-# --- 2. PACKAGING ---
+# --- 2. PACKAGING & CACHING ---
 def package_and_mail(email_id, mp3_path):
     zip_name = "mashup_result.zip"
-    
-    file_size = os.path.getsize(mp3_path) / (1024 * 1024) 
-    if file_size > 20:
-        st.warning(f"⚠️ Compressing {file_size:.1f}MB file...")
-        audio = AudioSegment.from_file(mp3_path)
-        compressed_path = "mashup_compressed.mp3"
-        audio.export(compressed_path, format="mp3", bitrate="192k")
-        mp3_path = compressed_path
-    
     with zipfile.ZipFile(zip_name, 'w') as z:
         z.write(mp3_path, arcname="custom_mashup.mp3")
     
@@ -157,30 +114,20 @@ def package_and_mail(email_id, mp3_path):
             msg['Subject'] = "Your Custom Music Mashup! 🎵"
             msg['From'] = sender
             msg['To'] = email_id
-            msg.set_content("Here is your generated mashup. Enjoy!")
-            
+            msg.set_content("Success! Your high-fidelity mashup is attached.")
             with open(zip_name, 'rb') as f:
                 msg.add_attachment(f.read(), maintype='application', subtype='zip', filename=zip_name)
-            
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
                 smtp.login(sender, pwd)
                 smtp.send_message(msg)
             st.success(f"✅ Email sent to {email_id}!")
         except Exception as e:
             st.warning(f"⚠️ Email failed: {str(e)}")
-    else:
-        st.info("📧 Email not configured - File saved locally.")
-    
     return zip_name
 
 # --- 3. FRONTEND ---
 st.set_page_config(page_title="Studio Mashup", page_icon="🎧")
-
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 25px; height: 3.5em; background: linear-gradient(45deg, #FF4B4B, #FF8E8E); color: white; border: none; font-weight: bold; }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("<style>.stButton>button { width: 100%; border-radius: 25px; height: 3.5em; background: linear-gradient(45deg, #FF4B4B, #FF8E8E); color: white; font-weight: bold; }</style>", unsafe_allow_html=True)
 
 c1, c2 = st.columns([1, 4])
 with c1: st.image("https://cdn-icons-png.flaticon.com/512/3293/3293810.png", width=100)
@@ -198,38 +145,34 @@ n_vids = st.slider("Number of Tracks", 10, 40, 20)
 use_auto = st.toggle("Smart Auto-Cut (Detect Chorus)", value=True)
 y_secs = 0 if use_auto else st.number_input("Seconds per track", 10, 60, 30)
 
-st.divider()
-
 if st.button("🚀 CREATE MASHUP"):
     if not singer or not email_id or "@" not in email_id:
-        st.warning("Please fill details.")
+        st.warning("Please provide valid details.")
     else:
+        # Caching logic
+        cache_name = f"{singer.replace(' ', '_').lower()}_{n_vids}_{'auto' if use_auto else y_secs}.mp3"
+        cache_path = os.path.join(STORAGE_DIR, cache_name)
+        
         prog = st.progress(0)
         status = st.empty()
+        
         try:
-            # 1. DOWNLOAD
-            status.text(f"⬇️ Downloading {n_vids} tracks (TV Client mode)...")
-            final_files = download_videos(singer, n_vids, status)
-            
-            # 2. PROCESS
-            status.text("🎹 Processing audio...")
-            mashup = process_audio_files(final_files, y_secs, use_auto, prog, status)
-            
-            # 3. EXPORT
-            status.text("💾 Saving...")
-            output_mp3 = "current_session_mashup.mp3"
-            mashup.export(output_mp3, format="mp3", bitrate="320k")
-            
-            # 4. PACKAGE
-            status.text("📧 Emailing...")
+            if os.path.exists(cache_path):
+                status.text("🎯 Found in storage! Preparing email...")
+                output_mp3 = cache_path
+            else:
+                status.text("⬇️ Downloading tracks...")
+                files = download_videos(singer, n_vids, status)
+                status.text("🎹 Analyzing audio peaks...")
+                mashup = process_audio_files(files, y_secs, use_auto, prog, status)
+                output_mp3 = "current_session.mp3"
+                mashup.export(output_mp3, format="mp3", bitrate="320k")
+                shutil.copy(output_mp3, cache_path)
+
             zip_res = package_and_mail(email_id, output_mp3)
-            
             prog.progress(100)
-            status.success("Done!")
             st.balloons()
-            
             with open(zip_res, "rb") as f:
-                 st.download_button("📥 Download ZIP", f, file_name="mashup.zip", mime="application/zip")
-                 
+                 st.download_button("📥 Download ZIP", f, file_name="mashup.zip")
         except Exception as e:
             st.error(f"❌ Error: {e}")
