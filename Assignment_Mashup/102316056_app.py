@@ -24,21 +24,30 @@ def download_videos(singer, n):
         except: pass
     os.makedirs(TEMP_DIR, exist_ok=True)
     
+    # COOKIES SETUP (Bypass 403)
+    cookie_file = "cookies.txt"
+    if "YOUTUBE_COOKIES" in st.secrets:
+        with open(cookie_file, "w") as f:
+            f.write(st.secrets["YOUTUBE_COOKIES"])
+    
     ydl_opts = {
-        'format': 'bestaudio',
-        'quiet': False, # Verbose
+        'format': 'bestaudio/best',
+        'quiet': False,
         'default_search': f'ytsearch{n}',
         'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
-        'ignoreerrors': True, # Skip errors to avoid stopping on one bad format
+        'ignoreerrors': True,
         'nopostprocessor': True,
         'socket_timeout': 30,
         'retries': 10,
+        # Use cookies if available
+        'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
+        # Fallback to Android client
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'], # Back to Android
+                'player_client': ['android', 'web'],
             }
         },
-        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
 
     try:
