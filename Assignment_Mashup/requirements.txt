@@ -1,0 +1,7 @@
+
+streamlit
+yt-dlp
+pydub
+librosa
+scipy
+numpy
