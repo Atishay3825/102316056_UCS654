@@ -34,14 +34,19 @@ def run_mashup_process(singer, n, y, auto_mode=False, progress_bar=None):
     
     ydl_opts = {
         'format': 'bestaudio/best',
-        'quiet': True,
+        'quiet': False, # Verbose enabled for debugging
         'default_search': f'ytsearch{n}',
         'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
-        'ignoreerrors': True,
+        'ignoreerrors': False, # Catch errors
         'nopostprocessor': True,
         'socket_timeout': 30,
         'retries': 10,
-        'source_address': '0.0.0.0', # Force IPv4
+        # Use Android client to bypass 403 on cloud IPs
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+            }
+        },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
 
