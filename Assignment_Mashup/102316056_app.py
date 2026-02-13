@@ -23,21 +23,22 @@ def download_videos(singer, n, status_text=None):
         except: pass
     os.makedirs(TEMP_DIR, exist_ok=True)
     
-    # COOKIE SETUP
     cookie_file = "cookies.txt"
     if "YOUTUBE_COOKIES" in st.secrets:
         with open(cookie_file, "w") as f:
             f.write(st.secrets["YOUTUBE_COOKIES"])
+    else:
+        raise Exception("YOUTUBE_COOKIES secret missing!")
 
     ydl_opts = {
-        'format': 'bestaudio/best', # High-fidelity fallback
+        'format': 'bestaudio/best', # Grab best available audio
         'quiet': False, 
         'default_search': f'ytsearch{n}',
         'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
         'ignoreerrors': True,
         'nopostprocessor': True,
-        'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
-        # Bypasses 403 Forbidden using iOS client
+        'cookiefile': cookie_file,
+        # Bypassing 403: Forcing the iOS client which is less restricted
         'extractor_args': {'youtube': {'player_client': ['ios']}},
         'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
     }
@@ -46,58 +47,21 @@ def download_videos(singer, n, status_text=None):
         with YoutubeDL(ydl_opts) as ydl:
             ydl.download([f"{singer} official audio"])
     except Exception as e:
-        raise Exception(f"Download Engine Failed: {str(e)}")
+        raise Exception(f"YouTube Download Failed: {str(e)}")
 
     gc.collect()
     time.sleep(2)
     
-    files_in_dir = os.listdir(TEMP_DIR)
+    # Verify files
     audio_exts = ('.mp3', '.m4a', '.webm', '.wav', '.ogg', '.flac', '.aac')
-    files = [os.path.join(TEMP_DIR, f) for f in files_in_dir 
+    files = [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR) 
              if f.lower().endswith(audio_exts) and not f.endswith('.info.json')]
         
     if not files:
-        raise Exception("YouTube download failed (403 or no files). Verify Cookies in Secrets.")
+        # If the list is empty, yt-dlp was blocked
+        raise Exception("403 Forbidden: YouTube blocked the request. Refresh cookies and Reboot app.")
         
     return files
-
-def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_text=None):
-    mashup = AudioSegment.empty()
-    total = len(files)
-    
-    for i, f in enumerate(files):
-        try:
-            if status_text: status_text.text(f"🎹 Processing {i+1}/{total}")
-            
-            # Load and Analyze
-            y_audio, sr = librosa.load(f, sr=None)
-            rms = librosa.feature.rms(y=y_audio)[0]
-            peak_frame = rms.argmax()
-            
-            if auto_mode:
-                # Smart Chorus Detection
-                threshold = rms[peak_frame] * 0.7
-                start_f = next((idx for idx, val in enumerate(rms) if val > threshold), 0)
-                end_f = len(rms) - next((idx for idx, val in enumerate(reversed(rms)) if val > threshold), 0)
-                start_ms = int(librosa.frames_to_time(start_f, sr=sr)*1000)
-                end_ms = int(librosa.frames_to_time(end_f, sr=sr)*1000)
-                if (end_ms - start_ms) > 40000: end_ms = start_ms + 40000
-            else:
-                # Manual Peak-Centered Cut
-                peak_time = librosa.frames_to_time(peak_frame, sr=sr)
-                start_ms = max(0, int((peak_time - (y/3)) * 1000))
-                end_ms = start_ms + (y * 1000)
-
-            clip = AudioSegment.from_file(f)[start_ms:end_ms].normalize()
-            mashup = mashup.append(clip, crossfade=1000) if len(mashup) > 0 else clip
-            
-            if progress_bar: progress_bar.progress(int(10 + (i / total) * 80))
-            gc.collect()
-            
-        except Exception as e:
-            continue
-
-    return mashup
 
 # --- 2. PACKAGING & CACHING ---
 def package_and_mail(email_id, mp3_path):
@@ -176,3 +140,4 @@ if st.button("🚀 CREATE MASHUP"):
                  st.download_button("📥 Download ZIP", f, file_name="mashup.zip")
         except Exception as e:
             st.error(f"❌ Error: {e}")
+
