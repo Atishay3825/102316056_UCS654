@@ -1,6 +1,0 @@
-streamlit
-yt-dlp>=2025.01.15
-pydub
-librosa
-numpy
-scipy
