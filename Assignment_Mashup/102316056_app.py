@@ -72,12 +72,16 @@ def download_videos(singer, n):
         raise Exception("No audio tracks found after download.")
     return files
 
-def process_audio_files(files, y, auto_mode=False, progress_bar=None):
+def process_audio_files(files, y, auto_mode=False, progress_bar=None, status_text=None):
     mashup = AudioSegment.empty()
     
     # PROCESSING LOOP
+    total_files = len(files)
     for i, f in enumerate(files):
         try:
+            if status_text:
+                status_text.text(f"🎹 Processing Track {i+1}/{total_files}: {os.path.basename(f)[:20]}...")
+            
             # Librosa Load
             y_audio, sr = librosa.load(f, sr=None)
             
@@ -212,6 +216,7 @@ if st.button("🚀 CREATE MASHUP"):
     else:
         prog = st.progress(0)
         status = st.empty()
+        
         try:
             final_files = []
             
@@ -229,31 +234,33 @@ if st.button("🚀 CREATE MASHUP"):
                         f.write(uf.getbuffer())
                     final_files.append(path)
             elif singer:
-                status.text("⬇️ Downloading from YouTube (This may take time)...")
+                status.text(f"⬇️ Downloading {n_vids} videos for '{singer}'...")
                 final_files = download_videos(singer, n_vids)
+                status.text(f"✅ Downloaded {len(final_files)} files. Starting processing...")
+                time.sleep(1)
             else:
                 st.error("Please provide a Singer Name OR Upload files.")
                 st.stop()
                 
             # 2. PROCESS
-            status.text("🎹 Mixing and Mastering...")
-            mashup = process_audio_files(final_files, y_secs, use_auto, prog)
+            mashup = process_audio_files(final_files, y_secs, use_auto, prog, status)
             
             # 3. EXPORT
+            status.text("💾 Saving Mashup to disk...")
             output_mp3 = "current_session_mashup.mp3"
             mashup.export(output_mp3, format="mp3", bitrate="320k")
             
             # 4. PACKAGE
-            status.text("📧 Sending...")
+            status.text(f"📧 Sending email to {email_id}...")
             zip_res = package_and_mail(email_id, output_mp3)
             
             prog.progress(100)
-            st.success("Success! Check your email or download below.")
+            status.success(f"🎉 Done! Sent to {email_id}")
             st.balloons()
             
             # Download Button
             with open(zip_res, "rb") as f:
-                 st.download_button("📥 Download ZIP", f, file_name="mashup.zip")
+                 st.download_button("📥 Download ZIP Result", f, file_name="mashup.zip", mime="application/zip")
                  
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"❌ Error caught: {str(e)}")
