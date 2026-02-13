@@ -25,17 +25,17 @@ def download_videos(singer, n):
     os.makedirs(TEMP_DIR, exist_ok=True)
     
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio',
         'quiet': False, # Verbose
         'default_search': f'ytsearch{n}',
         'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
-        'ignoreerrors': False,
+        'ignoreerrors': True, # Skip errors to avoid stopping on one bad format
         'nopostprocessor': True,
         'socket_timeout': 30,
         'retries': 10,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'web'], # Try iOS this time
+                'player_client': ['android', 'web'], # Back to Android
             }
         },
         'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
