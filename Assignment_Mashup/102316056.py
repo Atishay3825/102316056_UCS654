@@ -26,14 +26,16 @@ def run_mashup_process(singer, n, y, output_filename):
         
         # 1. DOWNLOAD
         ydl_opts = {
-            'format': 'bestaudio',
+            'format': 'bestaudio/best',
             'quiet': True,
             'default_search': f'ytsearch{n}',
             'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
             'ignoreerrors': True,
-            'nopostprocessor': True, # Avoid FFmpeg locks initially
+            'nopostprocessor': True,
             'socket_timeout': 30,
-            'retries': 5,
+            'retries': 10,
+            'source_address': '0.0.0.0',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         }
 
         logging.info("⬇️ Downloading audio streams...")
