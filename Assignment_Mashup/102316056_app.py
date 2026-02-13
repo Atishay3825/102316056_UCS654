@@ -33,15 +33,16 @@ def run_mashup_process(singer, n, y, auto_mode=False, progress_bar=None):
     os.makedirs(TEMP_DIR)
     
     ydl_opts = {
-        'format': 'bestaudio',
+        'format': 'bestaudio/best',
         'quiet': True,
         'default_search': f'ytsearch{n}',
         'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
         'ignoreerrors': True,
-        'nopostprocessor': True,  # Don't use FFmpeg postprocessor - avoid file locks
+        'nopostprocessor': True,
         'socket_timeout': 30,
-        'retries': 5,
-        'skip_unavailable_fragments': True,
+        'retries': 10,
+        'source_address': '0.0.0.0', # Force IPv4
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
 
     # DOWNLOAD
