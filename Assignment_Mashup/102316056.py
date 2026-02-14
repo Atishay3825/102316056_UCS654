@@ -1,154 +1,246 @@
-import streamlit as st
+import sys
 import os
-import time
+import yt_dlp
+from moviepy import AudioFileClip, concatenate_audioclips
 import shutil
-import logging
-from yt_dlp import YoutubeDL
-from pydub import AudioSegment
-import librosa
-import numpy as np
-import zipfile
+import concurrent.futures
 
-# Setup basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def run_mashup_process(singer, n, y, output_filename, status_text=None):
-    # --- CONFIGURATION ---
-    TEMP_DIR = "temp_work_dir_" + str(int(time.time()))
+def download_one(url, output_dir, max_retries=3):
+    """
+    Helper function to download a single video with retry logic and anti-bot measures.
+    """
+    import time
+    import random
     
-    # Clean/Create Temp Dir
-    if os.path.exists(TEMP_DIR): 
-        try: shutil.rmtree(TEMP_DIR)
-        except: pass
-    os.makedirs(TEMP_DIR, exist_ok=True)
+    # Try to get YouTube tokens from environment (set by Streamlit Secrets)
+    po_token = os.environ.get('YOUTUBE_PO_TOKEN', '')
+    visitor_data = os.environ.get('YOUTUBE_VISITOR_DATA', '')
+    
+    # Build extractor args for YouTube
+    youtube_extractor_args = {
+        'player_client': ['android', 'android_music'],  # Android client has better format support
+        'skip': ['hls', 'dash', 'translated_subs']
+    }
+    
+    # Add tokens if available
+    if po_token:
+        youtube_extractor_args['po_token'] = po_token
+        print(f"Using po_token for authentication (length: {len(po_token)})")
+    if visitor_data:
+        youtube_extractor_args['visitor_data'] = visitor_data
+        print(f"Using visitor_data for authentication (length: {len(visitor_data)})")
+    
+    ydl_opts = {
+        # Use simpler format string - let yt-dlp choose best available audio
+        'format': 'bestaudio/best',
+        'outtmpl': f'{output_dir}/%(title)s.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        # Android client headers
+        'http_headers': {
+            'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+        },
+        # YouTube-specific extractor args with tokens
+        'extractor_args': {
+            'youtube': youtube_extractor_args
+        },
+        # Rate limiting
+        'sleep_interval': 1,
+        'max_sleep_interval': 3,
+        'sleep_interval_requests': 1,
+        # Additional options
+        'age_limit': None,
+        'nocheckcertificate': True,
+    }
+    
+    # Retry logic with exponential backoff
+    for attempt in range(max_retries):
+        try:
+            # Add random delay between retries to avoid rate limiting
+            if attempt > 0:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                print(f"Retry {attempt + 1}/{max_retries} for {url} after {delay:.1f}s delay...")
+                time.sleep(delay)
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            if attempt < max_retries - 1:
+                # Check if it's a retryable error
+                if '403' in error_msg or 'Forbidden' in error_msg or 'HTTP Error' in error_msg:
+                    print(f"Download attempt {attempt + 1} failed for {url}: {error_msg}")
+                    continue
+                else:
+                    # Non-retryable error, fail immediately
+                    print(f"Non-retryable error for {url}: {error_msg}")
+                    return False
+            else:
+                print(f"Failed to download {url} after {max_retries} attempts: {error_msg}")
+                return False
+    
+    return False
+
+def download_and_convert(singer, n, output_dir="temp_downloads"):
+    """
+    Downloads N videos of the singer and converts them to audio concurrently.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    print(f"Searching for {n} videos of {singer}...")
+    
+    # 1. Fetch URLs first
+    search_opts = {
+        'quiet': True,
+        'extract_flat': True, 
+        'default_search': f"ytsearch{n}:{singer}",
+        'noplaylist': True,
+    }
+    
+    urls = []
     
     try:
-        if status_text: status_text.text(f"🎵 Starting Mashup for: {singer}")
-        
-        # 1. DOWNLOAD
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': False,
-            'default_search': f'ytsearch{n}',
-            'outtmpl': f'{TEMP_DIR}/%(id)s.%(ext)s',
-            'ignoreerrors': True,
-            'nopostprocessor': True,
-            'socket_timeout': 30,
-            'retries': 10,
-            'source_address': '0.0.0.0',
-            # Use 'android' client for better success rate
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        }
-
-        if status_text: status_text.text("⬇️ Downloading audio streams from YouTube...")
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"{singer} official audio"])
-        
-        # 2. PROCESS FILES
-        audio_extensions = ('.mp3', '.m4a', '.webm', '.wav', '.ogg', '.flac', '.aac')
-        files = []
-        
-        # Retry logic to find files
-        for _ in range(3):
-            files = [os.path.join(TEMP_DIR, f) for f in os.listdir(TEMP_DIR) 
-                     if f.endswith(audio_extensions) and not f.endswith('.info.json')]
-            if files: break
-            time.sleep(1)
-            
-        if not files:
-            raise Exception("Download failed. No audio files found (IP might be blocked).")
-
-        if status_text: status_text.text(f"✅ Found {len(files)} tracks. Processing...")
-        
-        mashup = AudioSegment.empty()
-        
-        # 3. CUT & MERGE
-        processed_count = 0
-        progress_bar = st.progress(0)
-        
-        for i, f in enumerate(files):
-            try:
-                # Librosa load (robust)
-                y_audio, sr = librosa.load(f, sr=None)
+        # Get Info
+        with yt_dlp.YoutubeDL(search_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{n}:{singer}", download=False)
+            if 'entries' in info:
+                urls = [entry['url'] for entry in info['entries']]
                 
-                # Calculate start/end
-                start_ms = 0
-                end_ms = int(y * 1000)
-                
-                # Pydub load
-                clip = AudioSegment.from_file(f)
-                
-                # Validation
-                if len(clip) < end_ms:
-                    continue
-                    
-                # Cut
-                clip = clip[start_ms:end_ms]
-                
-                # Normalize
-                clip = clip.normalize()
-                
-                # Append with Crossfade
-                if len(mashup) > 0:
-                    mashup = mashup.append(clip, crossfade=1000)
-                else:
-                    mashup = clip
-                
-                processed_count += 1
-                progress_bar.progress(int((i / len(files)) * 100))
-                
-            except Exception as e:
-                logging.warning(f"⚠️ Error processing file {f}: {e}")
-                continue
+        print(f"Found {len(urls)} videos. Starting parallel download (optimized for Streamlit)...")
 
-        if processed_count == 0:
-            raise Exception("Could not process any audio tracks successfully.")
-
-        # 4. EXPORT
-        if status_text: status_text.text(f"💾 Exporting mashup to {output_filename}...")
-        mashup.export(output_filename, format="mp3", bitrate="320k")
-        progress_bar.progress(100)
+        # 2. Download in parallel (Reduced workers to avoid rate limiting)
+        successful_downloads = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(download_one, url, output_dir) for url in urls]
+            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                if future.result():
+                    successful_downloads += 1
+                print(f"Progress: {i}/{len(urls)} processed, {successful_downloads} successful")
         
-        return output_filename
+        print(f"Download complete: {successful_downloads}/{len(urls)} videos downloaded successfully")
+        
+        if successful_downloads == 0:
+            raise Exception("No videos were downloaded successfully. Please check your internet connection or try again later.")
+             
+    except Exception as e:
+        print(f"Error during search/download: {e}")
+        raise
 
-    finally:
-        # Cleanup
-        try:
-            shutil.rmtree(TEMP_DIR)
-        except: pass
+    return output_dir
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Mashup Generator", page_icon="�")
+def process_one_audio(file_path, duration):
+    """
+    Helper to process a single audio file (load and cut).
+    Returns the successfully processed clip or None.
+    """
+    try:
+        clip = AudioFileClip(file_path)
+        if clip.duration > duration:
+            return clip.subclipped(0, duration)
+        else:
+            return clip
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        return None
 
-st.title("🎵 MP3 Mashup Generator")
-st.markdown("Convert your CLI script into a Web App instantly.")
-
-with st.form("mashup_form"):
-    singer = st.text_input("Singer Name", "Sharry Mann")
-    n_vids = st.number_input("Number of Videos", min_value=1, max_value=50, value=10)
-    y_duration = st.number_input("Duration (seconds)", min_value=5, max_value=60, value=20)
-    output_file = st.text_input("Output Filename", "mashup.mp3")
+def process_audios(source_dir, duration, output_filename):
+    """
+    Cuts the first 'duration' seconds of each audio and merges them using parallel processing.
+    """
+    print(f"Processing audios: Cutting first {duration} seconds and merging...")
     
-    submitted = st.form_submit_button("Generate Mashup")
+    audio_files = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if f.endswith('.mp3')]
+    clips = []
+    resources_to_close = []
 
-if submitted:
-    if not singer:
-        st.error("Please enter a singer name.")
-    else:
-        status = st.empty()
-        try:
-            if not output_file.endswith('.mp3'): output_file += ".mp3"
+    # Use ThreadPoolExecutor for processing (creating clips)
+    # Note: MoviePy might have thread safety issues with some backends, 
+    # but for simple cutting it should be fine.
+    # We collect results ensuring order is implicitly consistent or doesn't matter (mashup order usually random or sorted by filename)
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # Submit all tasks
+        future_to_file = {executor.submit(process_one_audio, f, duration): f for f in audio_files}
+        
+        for future in concurrent.futures.as_completed(future_to_file):
+            clip = future.result()
+            if clip:
+                clips.append(clip)
+                resources_to_close.append(clip)
+
+    try:
+        if clips:
+            print(f"Merging {len(clips)} clips...")
+            final_clip = concatenate_audioclips(clips)
+            resources_to_close.append(final_clip)
+            final_clip.write_audiofile(output_filename)
+            print(f"Mashup saved to {output_filename}")
+        else:
+            print("No audio clips to merge.")
             
-            result_path = run_mashup_process(singer, n_vids, y_duration, output_file, status)
-            
-            status.success(f"🎉 Mashup Created: {result_path}")
-            
-            with open(result_path, "rb") as f:
-                st.download_button(
-                    label="📥 Download Mashup",
-                    data=f,
-                    file_name=output_file,
-                    mime="audio/mpeg"
-                )
-        except Exception as e:
-            st.error(f"Error: {e}")
+    finally:
+        # Close all resources safely
+        for resource in resources_to_close:
+            try:
+                resource.close()
+            except Exception:
+                pass
+
+def clean_up(directory):
+    """
+    Removes the temporary directory.
+    """
+    if os.path.exists(directory):
+        shutil.rmtree(directory)
+        print(f"Cleaned up temporary directory: {directory}")
+
+def main():
+    # Check for correct number of parameters
+    # Usage: python <program.py> <SingerName> <NumberOfVideos> <AudioDuration> <OutputFileName>
+    if len(sys.argv) != 5:
+        print("Usage: python 102316056.py <SingerName> <NumberOfVideos> <AudioDuration> <OutputFileName>")
+        sys.exit(1)
+
+    singer_name = sys.argv[1]
+    try:
+        num_videos = int(sys.argv[2])
+        audio_duration = int(sys.argv[3])
+    except ValueError:
+        print("Error: NumberOfVideos and AudioDuration must be integers.")
+        sys.exit(1)
+        
+    output_file = sys.argv[4]
+
+    # Input Validation
+    if num_videos <= 10:
+        print("Error: NumberOfVideos must be greater than 10.")
+        sys.exit(1)
+    
+    if audio_duration < 20:
+        print("Error: AudioDuration must be greater than or equal to 20.")
+        sys.exit(1)
+
+    # Main Logic
+    temp_dir = "temp_mashup_files"
+    
+    try:
+        download_and_convert(singer_name, num_videos, temp_dir)
+        process_audios(temp_dir, audio_duration, output_file)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        clean_up(temp_dir)
+
+if __name__ == "__main__":
+    main()
