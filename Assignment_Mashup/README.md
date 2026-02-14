@@ -53,7 +53,7 @@ pip install -r requirements.txt
 
 ### 3️⃣ Run Locally
 ```bash
-streamlit run 102316056_app.py
+streamlit run 102316056.py
 ```
 
 ---
@@ -89,3 +89,4 @@ YOUTUBE_COOKIES = '''
 ---
 
 *Built with ❤️ using Python, Streamlit, and Librosa.*
+
